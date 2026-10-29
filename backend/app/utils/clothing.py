@@ -36,6 +36,27 @@ def count_composition(type_counts: list[tuple[str | None, int]]) -> WardrobeComp
     )
 
 
+def normalize_item_type(item_type: str | None) -> str:
+    return (item_type or "").strip().lower()
+
+
+def is_supported_type(item_type: str | None) -> bool:
+    # A type outside the vocabulary has no role, so it would claim no slot and slip past
+    # every slot check; such an item must not reach an outfit at all.
+    return normalize_item_type(item_type) in ITEM_ROLE
+
+
+def drop_unsupported_types(item_ids: list[UUID], item_type_map: dict[UUID, str]) -> list[UUID]:
+    kept = []
+    for iid in item_ids:
+        item_type = item_type_map.get(iid)
+        if not is_supported_type(item_type):
+            logger.warning(f"Removing item {iid}: unsupported type {item_type!r}")
+            continue
+        kept.append(iid)
+    return kept
+
+
 def _slots_for_type(item_type: str) -> frozenset[str]:
     role = ITEM_ROLE.get(item_type)
     if not role or role == "accessory":

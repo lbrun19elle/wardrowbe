@@ -44,12 +44,15 @@ from app.utils.clothing import (
     can_complete_outfit,
     canonical_item_order,
     deduplicate_by_body_slot,
+    drop_unsupported_types,
     fill_missing_regions,
     has_wearable_piece,
+    is_supported_type,
     missing_regions,
+    normalize_item_type,
     remove_legwear,
 )
-from app.utils.garment_vocabulary import render_outfit_prompt
+from app.utils.garment_vocabulary import ITEM_ROLE, render_outfit_prompt
 from app.utils.preference_defaults import (
     DEFAULT_LAYERING_PREFERENCE,
     DEFAULT_TEMPERATURE_SENSITIVITY,
@@ -157,7 +160,7 @@ def resolve_outfit_items(
     mandatory_item_ids: set[UUID] | None,
     drop_legwear: bool,
 ) -> list[UUID]:
-    valid_ids = picked_item_ids(outfit_data, number_map)
+    valid_ids = drop_unsupported_types(picked_item_ids(outfit_data, number_map), item_type_map)
 
     numbered = set(number_map.values())
     for mid in mandatory_item_ids or ():
@@ -237,7 +240,13 @@ class RecommendationService:
             return []
 
         items = [i for i in items if not i.needs_wash]
-        items = [i for i in items if i.type and i.type != "unknown"]
+        unsupported = [i for i in items if not is_supported_type(i.type)]
+        if unsupported:
+            logger.info(
+                f"Skipping {len(unsupported)} items with unsupported types: "
+                f"{sorted({i.type for i in unsupported}, key=str)}"
+            )
+            items = [i for i in items if is_supported_type(i.type)]
 
         if exclude_items:
             exclude_set = set(exclude_items)
@@ -362,11 +371,14 @@ class RecommendationService:
         for num, item in items_with_numbers:
             parts = []
 
-            item_type = item.type or "item"
+            item_type = normalize_item_type(item.type) or "item"
             if item.subtype:
                 parts.append(f"{item.subtype} ({item_type})")
             else:
                 parts.append(item_type)
+            role = ITEM_ROLE.get(item_type)
+            if role:
+                parts.append(f"role: {role}")
 
             if item.colors and len(item.colors) > 1:
                 parts.append(f"colors: {', '.join(item.colors)}")
@@ -870,6 +882,11 @@ class RecommendationService:
                     )
                 )
                 forced_items = list(result.scalars().all())
+                if any(not is_supported_type(item.type) for item in forced_items):
+                    raise ValueError(
+                        "One or more selected items has an unsupported clothing type. "
+                        "Please edit the item and choose a type from the list."
+                    )
                 candidates.extend(forced_items)
                 logger.info(f"Force-included {len(forced_items)} items in recommendation")
 
@@ -884,7 +901,7 @@ class RecommendationService:
             )
 
         mandatory_ids = set(include_items) if include_items else None
-        item_type_map = {item.id: (item.type or "").lower() for item in candidates}
+        item_type_map = {item.id: normalize_item_type(item.type) for item in candidates}
         if include_items:
             requested = deduplicate_by_body_slot(
                 list(include_items), item_type_map, mandatory_item_ids=mandatory_ids

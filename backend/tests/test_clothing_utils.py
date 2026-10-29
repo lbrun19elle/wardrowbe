@@ -9,9 +9,12 @@ from app.utils.clothing import (
     canonical_item_order,
     count_composition,
     deduplicate_by_body_slot,
+    drop_unsupported_types,
     fill_missing_regions,
     has_wearable_piece,
+    is_supported_type,
     missing_regions,
+    normalize_item_type,
     remove_legwear,
 )
 from app.utils.garment_vocabulary import ROLES
@@ -614,3 +617,67 @@ def test_fill_dresses_all_three_regions():
     ranked, ranked_types = _typed("dress", "shirt", "jeans", "boots")
     filled = fill_missing_regions([bag], ranked, outfit_types | ranked_types)
     assert filled == [bag, ranked[0], ranked[3]]
+
+
+@pytest.mark.parametrize(
+    ("item_type", "supported"),
+    [
+        ("dress", True),
+        (" Dress ", True),
+        ("jumpsuit", True),
+        ("belt", True),
+        ("unknown", False),
+        ("midi dress", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_supported_type_checks_the_vocabulary(item_type, supported):
+    assert is_supported_type(item_type) is supported
+
+
+def test_normalize_item_type_trims_and_lowercases():
+    assert normalize_item_type("  T-Shirt ") == "t-shirt"
+    assert normalize_item_type(None) == ""
+
+
+def test_drop_unsupported_types_keeps_only_vocabulary_items():
+    dress, odd, missing, shoes = _ids(4)
+    item_type_map = {dress: "dress", odd: "shirt dress", shoes: "sneakers"}
+    assert drop_unsupported_types([dress, odd, missing, shoes], item_type_map) == [dress, shoes]
+
+
+def test_one_piece_keeps_layers_footwear_legwear_and_accessories():
+    dress, cardigan, coat, tights, sneakers, belt, bag = _ids(7)
+    item_type_map = {
+        dress: "dress",
+        cardigan: "cardigan",
+        coat: "coat",
+        tights: "tights",
+        sneakers: "sneakers",
+        belt: "belt",
+        bag: "bag",
+    }
+    ids = [dress, cardigan, coat, tights, sneakers, belt, bag]
+    assert deduplicate_by_body_slot(ids, item_type_map) == ids
+
+
+@pytest.mark.parametrize("main_piece", ["shirt", "blouse", "skirt", "jeans", "suit", "jumpsuit"])
+def test_one_piece_drops_any_other_main_garment(main_piece):
+    dress, other, sneakers = _ids(3)
+    item_type_map = {dress: "dress", other: main_piece, sneakers: "sneakers"}
+    assert deduplicate_by_body_slot([dress, other, sneakers], item_type_map) == [dress, sneakers]
+
+
+def test_only_one_footwear_and_one_outer_layer_survive():
+    shirt, jeans, jacket, coat, sneakers, boots = _ids(6)
+    item_type_map = {
+        shirt: "shirt",
+        jeans: "jeans",
+        jacket: "jacket",
+        coat: "coat",
+        sneakers: "sneakers",
+        boots: "boots",
+    }
+    result = deduplicate_by_body_slot([shirt, jeans, jacket, coat, sneakers, boots], item_type_map)
+    assert result == [shirt, jeans, jacket, sneakers]

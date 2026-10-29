@@ -40,6 +40,16 @@ Time of day:
 - Night out: bolder choices, statement pieces, elevated accessories, darker palettes
 - Full day: versatile pieces that work from morning through evening; avoid extremes, favor adaptable colors and layers that can be adjusted
 
+GARMENT ROLES:
+Each item below is tagged with "role: ...". Trust the role, not the item's name, when deciding what an item can be worn with.
+- full_body (<<FULL_BODY_TYPES>>): a one-piece that covers both top and bottom. It replaces the top AND the bottom.
+- base_top (<<BASE_TOP_TYPES>>): the main top worn against the body.
+- bottom (<<BOTTOM_TYPES>>): the main lower-body garment.
+- suit (<<SUIT_TYPES>>): replaces the bottom; still needs a base_top.
+- mid_layer (<<MID_LAYER_TYPES>>): worn over a base_top or a full_body piece, never instead of one.
+- outer_layer (<<OUTER_LAYER_TYPES>>): worn over everything else; a hoodie may also be worn on its own as the top.
+- legwear (<<LEGWEAR_TYPES>>), socks (<<SOCKS_TYPES>>), footwear (<<FOOTWEAR_TYPES>>), neckwear (<<NECKWEAR_TYPES>>), accessory (<<ACCESSORY_TYPES>>): finishing pieces.
+
 AVAILABLE ITEMS:
 {items_text}
 
@@ -54,7 +64,10 @@ RULES:
 - OPTIONAL: ONE bag if appropriate for the occasion
 - OPTIONAL: accessories (belt, scarf, hat, jewelry) that genuinely complement the outfit
 - For cold or rainy weather, add outerwear (jacket/coat) if available
+- NEVER combine two full_body items, and NEVER combine a full_body item with a base_top, a bottom or a suit
+- At most ONE item per role, except accessories; a mid_layer and an outer_layer may be worn together
 - Every piece must earn its place — do not add items just to fill slots
+- The headline, highlights and styling tip must describe only the items you picked, using their listed colors and types; do not mention details (buttons, sleeves, closures) that the item data does not show
 - Do NOT pick the same item number twice
 - Return item NUMBERS only
 

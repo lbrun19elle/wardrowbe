@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -1070,3 +1071,168 @@ class TestHotDayLegwear:
         await self._hot_day_outfits(db_session, test_user, [[3, 2, 4]], cached={"items": [2, 4]})
         assert self.reasonings == ["AI 1"]
         self.ai.generate_text.assert_awaited_once()
+
+
+class TestGarmentRoleValidation:
+    def _resolve(self, kinds, picked=None):
+        ids = [uuid4() for _ in kinds]
+        resolved = resolve_outfit_items(
+            {"items": picked or list(range(1, len(kinds) + 1))},
+            dict(enumerate(ids, start=1)),
+            dict(zip(ids, kinds, strict=True)),
+            None,
+            drop_legwear=False,
+        )
+        return [kinds[ids.index(iid)] for iid in resolved]
+
+    @pytest.mark.parametrize(
+        ("kinds", "expected"),
+        [
+            (["dress", "dress", "sneakers"], ["dress", "sneakers"]),
+            (["dress", "jumpsuit", "sneakers"], ["dress", "sneakers"]),
+            (["shirt", "skirt", "dress", "sandals"], ["dress", "sandals"]),
+            (
+                ["dress", "cardigan", "coat", "boots", "belt", "bag"],
+                ["dress", "cardigan", "coat", "boots", "belt", "bag"],
+            ),
+            (
+                ["t-shirt", "jeans", "jacket", "sneakers", "belt", "hat"],
+                ["t-shirt", "jeans", "jacket", "sneakers", "belt", "hat"],
+            ),
+            (["shirt", "blouse", "pants", "shoes", "boots"], ["shirt", "pants", "shoes"]),
+            (["dress", "midi dress", "sneakers"], ["dress", "sneakers"]),
+            (["shirt", "jeans", "unknown", "sneakers"], ["shirt", "jeans", "sneakers"]),
+        ],
+        ids=[
+            "two-dresses",
+            "dress-and-jumpsuit",
+            "dress-over-separates",
+            "dress-with-layers-and-accessories",
+            "separates-with-layer-and-accessories",
+            "one-top-one-bottom-one-footwear",
+            "unsupported-type",
+            "unknown-type",
+        ],
+    )
+    def test_resolved_outfit_respects_garment_roles(self, kinds, expected):
+        assert self._resolve(kinds) == expected
+
+    def test_prompt_lines_carry_the_vocabulary_role(self):
+        service = RecommendationService.__new__(RecommendationService)
+        dress = _make_item(type="Dress", name="Camila Dress")
+        cardigan = _make_item(type="cardigan")
+        text, _ = service._format_items_for_prompt(
+            [ScoredItem(item=dress), ScoredItem(item=cardigan)], {}, date(2026, 3, 8)
+        )
+        first, second = text.splitlines()
+        assert "dress | role: full_body" in first
+        assert "role: mid_layer" in second
+
+    def test_prompt_explains_roles_and_forbids_incompatible_combinations(self):
+        assert "GARMENT ROLES" in RECOMMENDATION_PROMPT
+        assert "mid_layer (vest, cardigan)" in RECOMMENDATION_PROMPT
+        assert "NEVER combine two full_body items" in RECOMMENDATION_PROMPT
+        assert "NEVER combine a full_body item with a base_top, a bottom or a suit" in (
+            RECOMMENDATION_PROMPT
+        )
+
+    @pytest.mark.asyncio
+    async def test_candidates_exclude_unsupported_types(self, db_session, test_user):
+        items = [
+            ClothingItem(
+                user_id=test_user.id,
+                type=kind,
+                image_path=f"test/{uuid4()}.jpg",
+                status=ItemStatus.ready,
+            )
+            for kind in ("dress", "Sneakers", "midi dress", "unknown")
+        ]
+        db_session.add_all(items)
+        await db_session.commit()
+        service = RecommendationService(db_session)
+        candidates = await service.get_candidate_items(
+            user=test_user, weather=_weather(), occasion="casual", preferences=None, exclude_items=[]
+        )
+        assert {c.id for c in candidates} == {items[0].id, items[1].id}
+
+    async def _suggest(self, db_session, user, items, picks, include=()):
+        db_session.add_all(items)
+        await db_session.commit()
+        user.preferences = None
+        prompts = []
+
+        async def answer(prompt, return_metadata=True):
+            prompts.append(prompt)
+            numbers = {
+                name: int(num) for num, name in re.findall(r'^\[(\d+)\] "([^"]+)"', prompt, re.M)
+            }
+            outfit = {
+                "items": [numbers[name] for name in picks if name in numbers],
+                "headline": "Pink & White Casual Chic",
+            }
+            return MagicMock(content=json.dumps({"outfits": [outfit]}), model="m", endpoint="e")
+
+        ai = MagicMock()
+        ai.generate_text = AsyncMock(side_effect=answer)
+        service = RecommendationService(db_session)
+        with (
+            patch("app.services.recommendation_service.AIService", return_value=ai),
+            patch("app.services.recommendation_service.pop_suggestion", AsyncMock(return_value=None)),
+            patch("app.services.recommendation_service.push_suggestions", AsyncMock()),
+        ):
+            outfits = await service.generate_recommendations(
+                user=user,
+                occasion="casual",
+                weather_override=_weather(temp=22),
+                include_items=[i.id for i in include],
+                time_of_day=TimeOfDay.afternoon,
+            )
+        self.prompt = prompts[0] if prompts else None
+        return [{oi.item_id for oi in o.items} for o in outfits]
+
+    def _wardrobe(self, user, purple_type):
+        def item(name, kind, color):
+            return ClothingItem(
+                user_id=user.id,
+                name=name,
+                type=kind,
+                image_path=f"test/{uuid4()}.jpg",
+                status=ItemStatus.ready,
+                primary_color=color,
+            )
+
+        return {
+            "camila": item("Camila Dress", "dress", "pink"),
+            "purple": item("Purple Dress", purple_type, "purple"),
+            "sneakers": item("White Sneakers", "sneakers", "white"),
+            "belt": item("Tan Belt", "belt", "tan"),
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("purple_type", ["dress", "jumpsuit", "midi dress"])
+    async def test_two_dress_suggestion_regression(self, db_session, test_user, purple_type):
+        # The reported failure: Camila Dress + white sneakers + tan belt + a purple dress.
+        wardrobe = self._wardrobe(test_user, purple_type)
+        outfits = await self._suggest(
+            db_session,
+            test_user,
+            list(wardrobe.values()),
+            ["Camila Dress", "White Sneakers", "Tan Belt", "Purple Dress"],
+        )
+        assert outfits == [{wardrobe[k].id for k in ("camila", "sneakers", "belt")}]
+        # An item outside the vocabulary is never offered to the AI at all.
+        assert ('"Purple Dress"' in self.prompt) is (purple_type != "midi dress")
+
+    @pytest.mark.asyncio
+    async def test_a_requested_item_with_an_unsupported_type_is_refused(
+        self, db_session, test_user
+    ):
+        wardrobe = self._wardrobe(test_user, "midi dress")
+        with pytest.raises(ValueError, match="unsupported clothing type"):
+            await self._suggest(
+                db_session,
+                test_user,
+                list(wardrobe.values()),
+                ["Purple Dress", "White Sneakers"],
+                include=[wardrobe["purple"]],
+            )
